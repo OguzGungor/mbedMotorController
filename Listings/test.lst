@@ -1,0 +1,585 @@
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 1   
+
+
+C51 COMPILER V9.60.0.0, COMPILATION OF MODULE TEST
+OBJECT MODULE PLACED IN .\Objects\test.obj
+COMPILER INVOKED BY: C:\Keil_v5\C51\BIN\C51.EXE test.c OPTIMIZE(8,SPEED) BROWSE DEBUG OBJECTEXTEND PRINT(.\Listings\test
+                    -.lst) TABS(2) OBJECT(.\Objects\test.obj)
+
+line level    source
+
+   1          
+   2          
+   3          #include <REG51.H>
+   4          #include <stdio.h>
+   5          #include <string.h>
+   6          #include "lcd.h"
+   7          
+   8          //override switch
+   9          sbit P1_7 = P1^7;
+  10          
+  11          //Keypad pins
+  12          sbit row_0 = P0^0;
+  13          sbit row_1 = P0^1;
+  14          sbit row_2 = P0^2;
+  15          sbit row_3 = P0^3;
+  16          sbit col_0 = P0^4;
+  17          sbit col_1 = P0^5;
+  18          sbit col_2 = P0^6;
+  19          
+  20          //ADCpins
+  21          sbit ADC_RD = P1^4; // ADC RD
+  22          sbit  ADC_WR = P1^5; // ADC WR
+  23          sbit ADC_INT = P1^6; // ADC INTR
+  24          
+  25          
+  26          //testLed
+  27          sbit task4 = P3^5;
+  28          sbit task3 = P3^7;
+  29          sbit task2 = P3^6;
+  30          sbit task1 = P3^4;
+  31          
+  32          //Motor Pins
+  33          sbit motor_1 = P1^0;     
+  34          sbit motor_2 = P1^1; 
+  35          
+  36          //keypad key
+  37          unsigned char pressedKey = 1;
+  38          
+  39          //overrideFlag
+  40          bit overrideFlag;
+  41          
+  42          //measure Values
+  43          unsigned int revolution;
+  44          unsigned int time;
+  45          unsigned int rps;
+  46          unsigned int desiredRPS;
+  47          unsigned int desiredSpeed;
+  48          unsigned char desiredGear;
+  49          
+  50          //main while loop flags
+  51          bit printMessage;
+  52          bit parseFlag;
+  53          
+  54          //UART receive buffer
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 2   
+
+  55          char overrideBuffer [6]; //buffer
+  56          unsigned char overrideIndex; //uart index counter for buffer 
+  57          
+  58          //string to be parsed(saved after convenient 6 chars buffered)
+  59          char *parseMessage;
+  60          
+  61          //response string(ACK or NACK)
+  62          char *response;
+  63          
+  64          //constant core speeds(will be altered with ADC and Keypad
+  65          unsigned int coreSpeed;
+  66          unsigned char coreGear;
+  67          
+  68          //shared speed and gear values
+  69          unsigned int speed;
+  70          unsigned char gear;
+  71          
+  72          
+  73          void scanKeypad();
+  74          
+  75          
+  76          //motor interrupt
+  77          void motor_sensor_interrupt (void) interrupt 0 
+  78          { 
+  79   1        revolution++; 
+  80   1        
+  81   1      }
+  82          
+  83          
+  84          //timer ISR
+  85          void timer (void) interrupt 1{
+  86   1        
+  87   1        time++;
+  88   1        if(revolution > 63534){
+  89   2          revolution = 1;
+  90   2          time = 1;
+  91   2        }
+  92   1      }
+  93          
+  94          //keypad interrupt
+  95          void external_interrupt_1 (void) interrupt 2 using 1
+  96          {   
+  97   1        scanKeypad();
+  98   1        row_0 = 0;
+  99   1        row_1 = 0;
+ 100   1        row_2 = 0;
+ 101   1        row_3 = 0;
+ 102   1        coreGear = pressedKey;
+ 103   1        IE1 = 0;
+ 104   1      }
+ 105          
+ 106          //UART interrupt
+ 107          void test0(void) interrupt 4 using 2{
+ 108   1        
+ 109   1        
+ 110   1        if(RI){                                             //Serial RX flag check
+ 111   2          if(P1_7){                                         //switch check
+ 112   3            
+ 113   3            response = "NACK\n";                            //set response as NACK
+ 114   3            printMessage = 1;                               //set print flag to print response
+ 115   3            
+ 116   3          }else{    
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 3   
+
+ 117   3            if(overrideIndex == 0){                         //checking first character of message to validate message structure
+ 118   4              if(SBUF == 's'){                              
+ 119   5                overrideBuffer[overrideIndex] = SBUF;       //valid character, save to buffer
+ 120   5                overrideIndex++;
+ 121   5              }else if(SBUF == 'u'){
+ 122   5                overrideBuffer[overrideIndex] = SBUF;       //valid character, save to buffer
+ 123   5                overrideIndex++;
+ 124   5              }else{
+ 125   5                response = "NACK\n";                        //invalid character, set response as NACK
+ 126   5                printMessage = 1;                           //set main while loop flag to print response after ISR
+ 127   5              }
+ 128   4            }else if(overrideIndex <= 4){                   
+ 129   4            overrideBuffer[overrideIndex] = SBUF;           //save following characters to buffer if first character is 
+             -valid
+ 130   4            overrideIndex++;    
+ 131   4            }else{      
+ 132   4            overrideBuffer[overrideIndex] = SBUF;           //save last character to buffer, which is checksum
+ 133   4            overrideIndex = 0;                              //set override index to 0 for new messages
+ 134   4            parseMessage = overrideBuffer;                  //save message to parse buffer
+ 135   4            parseFlag = 1;                                  //set parseFlag to parse message in main while loop
+ 136   4            
+ 137   4            }       
+ 138   3          } 
+ 139   2          RI = 0;                                           //reset RI flag to prevent ISR loops
+ 140   2        }
+ 141   1      }
+ 142          
+ 143          
+ 144          void disable_interrupts(){  
+ 145   1      
+ 146   1        EA = 0;                         //disable interrupts
+ 147   1      /*  ES = 0;                         //disable serial interrupt  
+ 148   1        EX1 = 0;                        // Enable External interrupt 1  
+ 149   1        EX0 = 0;                        // Enable External interrupt 0  
+ 150   1        ET0 = 0;                       // Enable Timer 0 interrupt */
+ 151   1      }
+ 152          
+ 153          void enable_interrupts(){
+ 154   1      
+ 155   1        EA = 1;                         //enable interrupts
+ 156   1      /*  ES = 1;                         //enable serial interrupt
+ 157   1        EX1 = 1;                        // Enable External interrupt 1  
+ 158   1        EX0 = 1;                        // Enable External interrupt 0  
+ 159   1        ET0 = 1;                       // Enable Timer 0 interrupt */
+ 160   1      }
+ 161          
+ 162          
+ 163          //basic power method to make string to numeric calculations
+ 164          int pow(int base , int power){
+ 165   1        int temp = 1;
+ 166   1        if(base == 0){
+ 167   2          return 0;
+ 168   2        }
+ 169   1        while(power>0){
+ 170   2          temp *=base;
+ 171   2          power--;
+ 172   2        }
+ 173   1        
+ 174   1        return temp;
+ 175   1      
+ 176   1      }
+ 177          
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 4   
+
+ 178          
+ 179          //initializations for setup
+ 180          void setup(){     
+ 181   1        functionSet();  
+ 182   1        printMessage = 0;               //event Flag to proint message
+ 183   1        parseFlag = 0;                  //event flag to parse message
+ 184   1        overrideFlag = 0;
+ 185   1        overrideIndex = 0;              //initial override index
+ 186   1        revolution = 0;
+ 187   1        time = 1;
+ 188   1        rps = 0;
+ 189   1        
+ 190   1        //keypad row init
+ 191   1        row_0 = 0;
+ 192   1        row_1 = 0;
+ 193   1        row_2 = 0;
+ 194   1        row_3 = 0;
+ 195   1        
+ 196   1        motor_1 = 0;
+ 197   1        motor_2 = 1;
+ 198   1        /*************************************************
+ 199   1                UART  
+ 200   1        **************************************************/
+ 201   1        
+ 202   1        SCON  = 0x50;                   /* SCON: mode 1, 8-bit UART, enable rcvr    */
+ 203   1        TMOD |= 0x21;                   /* TMOD: timer 1, mode 2, 8-bit reload      */
+ 204   1        TH1   = 0xFE;                   /* TH1:  reload value for 19200 baud         */
+ 205   1        TR1   = 1;                      /* TR1:  timer 1 run                        */
+ 206   1        TI    = 1;                      /* TI:   set TI to send first char of UART  */
+ 207   1        
+ 208   1        /**************************************************
+ 209   1                ADC
+ 210   1        ********************************************/
+ 211   1        ADC_RD = 1;
+ 212   1        
+ 213   1        
+ 214   1        coreGear = 9;                   //predetermined coreGearValue(will be set as keypad value)
+ 215   1        coreSpeed = 255;                //predetermined coreSpeed value(will be set as ADC value)
+ 216   1        speed = coreSpeed;
+ 217   1        gear = coreGear;
+ 218   1        enable_interrupts();            //initially,interrupts are enabled
+ 219   1        
+ 220   1        ES = 1;                         //enable serial interrupt
+ 221   1        EX1 = 1;                        // Enable External interrupt 1  
+ 222   1        EX0 = 1;                        // Enable External interrupt 0  
+ 223   1        ET0 = 1;                       // Enable Timer 0 interrupt  
+ 224   1        
+ 225   1        IT0 = 1;    
+ 226   1        IT1 = 1;
+ 227   1        
+ 228   1        TH0 = 0x48;    /* Load 8-bit in TH0 (here Timer0 used) */
+ 229   1        TL0 = 0x14;   /* Load 5-bit in TL0 */
+ 230   1        TR0 = 1;      /* Start timer0 */ 
+ 231   1        
+ 232   1        //initializing display
+ 233   1        functionSet2();
+*** WARNING C206 IN LINE 233 OF test.c: 'functionSet2': missing function-prototype
+ 234   1        entryModeSet(1, 0); // increment and no shift
+ 235   1        displayOnOffControl(1, 0, 0); // display on, cursor on and blinking on
+ 236   1        setDdRamAddress(0x00); // back to start of LCD
+ 237   1        sendString("MS:"); // print on LCD      
+ 238   1        setDdRamAddress(0x40); // back to start of LCD  
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 5   
+
+ 239   1        sendString("DS:"); // print on LCD      
+ 240   1        setDdRamAddress(0x4D); // back to start of LCD  
+ 241   1        sendString("O:"); // print on LCD         
+ 242   1        setDdRamAddress(0x08); // back to start of LCD  
+ 243   1        sendString("S:"); // print on LCD         
+ 244   1        setDdRamAddress(0x48); // back to start of LCD  
+ 245   1        sendString("G:"); // print on LCD   
+ 246   1      
+ 247   1      }
+ 248          
+ 249          //adc read task
+ 250          void readADC(){
+ 251   1        
+ 252   1          P2 = 255;
+ 253   1          ADC_WR = 0;
+ 254   1          ADC_WR = 1;
+ 255   1          T1 = 0;     
+ 256   1          while(ADC_INT){;} 
+ 257   1          ADC_RD = 0;
+ 258   1          coreSpeed = P2;
+ 259   1          ADC_RD = 1; 
+ 260   1      }
+ 261          
+ 262          //task1
+ 263          //parse function to parse message content
+ 264          void parse(){
+ 265   1          char i;
+ 266   1          short temp;                                                   //temporary speed in function stack
+ 267   1          short temp2;                                                  //temporary gear in function stack
+ 268   1          short checksum;                                               //checksum value for received message 
+ 269   1          char tempParseMessage[6];                                     //temporary char buffer to hold message to be parsed  
+ 270   1          temp = 0;                                           
+ 271   1          temp2 = 0;                                                    //initial values of stack variables
+ 272   1          checksum = 0;
+ 273   1        
+ 274   1          disable_interrupts();                                         //entering critical section,interrupts are disabled
+ 275   1          memcpy(tempParseMessage,parseMessage,6);
+ 276   1          enable_interrupts();                                          //critical section ends,reenabling interrupts 
+ 277   1        
+ 278   1          for(i = 0 ; i < 5 ; i++){
+ 279   2            checksum += tempParseMessage[i];                            //checksum calculations
+ 280   2          }
+ 281   1          if(checksum%10 != tempParseMessage[5]-48){                    //checksum validation
+ 282   2            //printf("checksum denied\n");
+ 283   2            
+ 284   2            disable_interrupts();                                       //entering critical section,interrupts are disabled
+ 285   2            response = "NACK\n";                                        //invalid checksum,set response message as NACK       
+ 286   2            printMessage = 1;                                           //set print flag to print response
+ 287   2            enable_interrupts();                                        //critical section ends,reenabling interrupts     
+ 288   2            
+ 289   2            return;                                                     //end parsing,message is invalid      
+ 290   2          }
+ 291   1      
+ 292   1          if(tempParseMessage[0] == 's'){                               //check if message is stop command
+ 293   2            
+ 294   2            disable_interrupts();                                       //entering critical section,interrupts are disabled
+ 295   2            gear = coreGear;                                            //set coreValues to gear and speed values 
+ 296   2            speed = coreSpeed;
+ 297   2            response = "ACK\n";                                         //message is valid, set response as ACK
+ 298   2            printMessage = 1;                                           //set print flag to print response
+ 299   2            overrideFlag = 0;
+ 300   2            enable_interrupts();                                        //critical section ends,reenabling interrupts   
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 6   
+
+ 301   2            
+ 302   2            return;
+ 303   2            
+ 304   2          }else{
+ 305   2            if(tempParseMessage[1] < 58 && tempParseMessage[1] > 47){   //check if message element is a numeric and 
+             -less than 3
+ 306   3              temp2 = tempParseMessage[1] -48;                          //set numeric as temporary gear values
+ 307   3            }
+ 308   2            else{
+ 309   3              
+ 310   3              disable_interrupts();                                     //entering critical section,interrupts are disabled
+ 311   3              response = "NACK\n";                                      //element is not numeric,message is invalid
+ 312   3              printMessage = 1;                                         //set print flag to print response
+ 313   3              enable_interrupts();                                      //critical section ends,reenabling interrupts
+ 314   3              
+ 315   3              return;                                                   //end parsing,message is invalid      
+ 316   3            }
+ 317   2            for(i = 2 ; i < 5 ; i++){       
+ 318   3              if(tempParseMessage[i] < 58 && tempParseMessage[i] > 47){ //check is elements are numeric         
+ 319   4                temp += ((tempParseMessage[i] -48)*pow(10,4-i));        //convert numeric chars to numeric values         
+ 320   4              }else{
+ 321   4                
+ 322   4              disable_interrupts();                                     //entering critical section,interrupts are disabled
+ 323   4              response = "NACK\n";                                      //elements are not numeric,message is invalid
+ 324   4              printMessage = 1;                                         //set print flag to print response
+ 325   4              enable_interrupts();                                      //critical section ends,reenabling interrupts 
+ 326   4                
+ 327   4              return;                                                   //end parsing,message is invalid
+ 328   4              }
+ 329   3            }
+ 330   2            if(temp > 255){
+ 331   3              
+ 332   3              disable_interrupts();                                     //entering critical section,interrupts are disabled
+ 333   3              response = "NACK\n";                                      //elements are not numeric,message is invalid
+ 334   3              printMessage = 1;                                         //set print flag to print response
+ 335   3              enable_interrupts();                                      //critical section ends,reenabling interrupts 
+ 336   3                
+ 337   3              return;                                                   //end parsing,message is invalid
+ 338   3            }     
+ 339   2            disable_interrupts();                                       //entering critical section,interrupts are disabled
+ 340   2            speed = temp;                                               //message is valid and program in override state,set parsed speed 
+             -as speed
+ 341   2            gear = temp2;                                               //set parsed gear as gear
+ 342   2            response = "ACK\n";                                         //message is valid, set response as ACK
+ 343   2            printMessage = 1;                                           //set print flag to print response
+ 344   2            overrideFlag = 1;
+ 345   2            enable_interrupts();                                        //critical section ends,reenabling interrupts 
+ 346   2            
+ 347   2          }
+ 348   1      }
+ 349          
+ 350          //task 2
+ 351          void measure(){
+ 352   1        
+ 353   1        disable_interrupts();                                     //entering critical section,interrupts are disabled
+ 354   1              
+ 355   1        rps = ((revolution/time)*114)/100;
+ 356   1        if(P1_7){
+ 357   2          
+ 358   2          desiredSpeed = (coreSpeed*10)/23;
+ 359   2          desiredGear = coreGear;
+ 360   2          
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 7   
+
+ 361   2        }else{
+ 362   2          
+ 363   2          if(overrideFlag){
+ 364   3            desiredSpeed = (speed*10)/23;
+ 365   3            desiredGear = gear;
+ 366   3          }
+ 367   2          else{
+ 368   3            desiredSpeed = (coreSpeed*10)/23;
+ 369   3            desiredGear = coreGear;
+ 370   3          } 
+ 371   2          
+ 372   2        } 
+ 373   1        desiredRPS = desiredSpeed*desiredGear;
+ 374   1        enable_interrupts();
+ 375   1        if(rps<desiredRPS){
+ 376   2          motor_2 = 1;
+ 377   2        }else{
+ 378   2          motor_2 = 0;
+ 379   2        }
+ 380   1        
+ 381   1      }
+ 382          
+ 383          
+ 384          //task 3
+ 385          void display(){ 
+ 386   1          char text[16];
+ 387   1          
+ 388   1          
+ 389   1          enable_interrupts();
+ 390   1          setDdRamAddress(0x03); // back to start of LCD
+ 391   1          sprintf(text,"%-3u",rps);
+ 392   1          //sprintf(text,"%-3u:%-3u",coreSpeed,speed);
+ 393   1          sendString(text); // print on LCD   
+ 394   1          setDdRamAddress(0x43); // back to start of LCD
+ 395   1          sprintf(text,"%-3u",desiredRPS);  
+ 396   1          //sprintf(text,"%-3u:%-3u",coreGear,gear);    
+ 397   1          sendString(text); // print on LCD   
+ 398   1          setDdRamAddress(0x4F); // back to start of LCD      
+ 399   1          if(P1_7){         
+ 400   2            
+ 401   2            sendString("0"); // print on LCD  
+ 402   2            
+ 403   2          }else{
+ 404   2            
+ 405   2            disable_interrupts();   
+ 406   2            if(overrideFlag){       
+ 407   3              sendString("1"); // print on LCD  
+ 408   3            }else{
+ 409   3              sendString("0");
+ 410   3            }     
+ 411   2            enable_interrupts();
+ 412   2          } 
+ 413   1          
+ 414   1          setDdRamAddress(0x0A); // back to start of LCD      
+ 415   1          sprintf(text,"%-3u",desiredSpeed);
+ 416   1          sendString(text); // print on LCD         
+ 417   1          setDdRamAddress(0x4A); // back to start of LCD  
+ 418   1          sprintf(text,"%-1u",(unsigned int)desiredGear);
+ 419   1          sendString(text); // print on LCD
+ 420   1        
+ 421   1      
+ 422   1      }
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 8   
+
+ 423          
+ 424          
+ 425          
+ 426          void main (void)  { 
+ 427   1          setup();  
+ 428   1        
+ 429   1          while(1){
+ 430   2            //task 0
+ 431   2            if(printMessage){           //print event
+ 432   3              printf("response : %s",response);
+ 433   3              //printf("parseMessage : %s\n",parseMessage);       
+ 434   3              //printf("gear : %d\nspeed : %d\n",gear,speed);
+ 435   3              printMessage = 0;         
+ 436   3              
+ 437   3            }
+ 438   2            
+ 439   2            //task1
+ 440   2            task1 = 0;
+ 441   2            readADC();
+ 442   2            task1 = 1;
+ 443   2            
+ 444   2            
+ 445   2            //task 2
+ 446   2            
+ 447   2            if(parseFlag){              //parse event
+ 448   3              task2 = 0;
+ 449   3              parse();
+ 450   3              
+ 451   3              parseFlag = 0;
+ 452   3              task2 = 1;
+ 453   3            }
+ 454   2            
+ 455   2            //task 3    
+ 456   2            task3 = 0;      
+ 457   2            measure();
+ 458   2            task3 = 1;
+ 459   2            
+ 460   2            //task 4
+ 461   2            task4 = 0;
+ 462   2            display();
+ 463   2            task4 = 1;
+ 464   2            
+ 465   2          }
+ 466   1        
+ 467   1        
+ 468   1        
+ 469   1      }
+ 470          #pragma registerbank(1)
+ 471          void scanKeypad(){
+ 472   1        row_0 = 0;
+ 473   1        row_1 = 1;
+ 474   1        row_2 = 1;
+ 475   1        row_3 = 1;
+ 476   1        
+ 477   1        if(!col_0){
+ 478   2          return;
+ 479   2        }
+ 480   1        else if(!col_1){
+ 481   2          pressedKey = '0';
+ 482   2          return;
+ 483   2        }
+ 484   1        else if(!col_2){
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 9   
+
+ 485   2          return;
+ 486   2        }
+ 487   1        
+ 488   1        row_0 = 1;
+ 489   1        row_1 = 0;
+ 490   1        row_2 = 1;
+ 491   1        row_3 = 1;
+ 492   1        if(!col_0){
+ 493   2          pressedKey = 9;
+ 494   2          return;
+ 495   2        }
+ 496   1        else if(!col_1){
+ 497   2          pressedKey = 8;
+ 498   2          return;
+ 499   2        }
+ 500   1        else if(!col_2){
+ 501   2          pressedKey = 7;
+ 502   2          return;
+ 503   2        }
+ 504   1        
+ 505   1        row_0 = 1;
+ 506   1        row_1 = 1;
+ 507   1        row_2 = 0;
+ 508   1        row_3 = 1;
+ 509   1        if(!col_0){
+ 510   2          pressedKey = 6;
+ 511   2          return;
+ 512   2        }
+ 513   1        else if(!col_1){
+ 514   2          pressedKey = 5;
+ 515   2          return;
+ 516   2        }
+ 517   1        else if(!col_2){
+ 518   2          pressedKey = 4;
+ 519   2          return;
+ 520   2        }
+ 521   1        
+ 522   1        row_0 = 1;
+ 523   1        row_1 = 1;
+ 524   1        row_2 = 1;
+ 525   1        row_3 = 0;
+ 526   1        if(!col_0){
+ 527   2          pressedKey = 3;
+ 528   2          return;
+ 529   2        }
+ 530   1        else if(!col_1){
+ 531   2          pressedKey = 2;
+ 532   2          return;
+ 533   2        }
+ 534   1        else if(!col_2){
+ 535   2          pressedKey = 1;
+ 536   2          return;
+ 537   2        }
+ 538   1        
+ 539   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   1378    ----
+   CONSTANT SIZE    =     56    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+C51 COMPILER V9.60.0.0   TEST                                                              01/08/2021 03:06:56 PAGE 10  
+
+   DATA SIZE        =     31      31
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =      3    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  1 WARNING(S),  0 ERROR(S)
